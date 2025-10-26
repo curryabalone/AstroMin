@@ -5,6 +5,6 @@ void setup(){
 }
 
 void loop(){
-    Serial.println("Hello, MotherFucker");
+    Serial.println("Welcome to AstroJay");
     delay(1000);
 }
