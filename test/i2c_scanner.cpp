@@ -2,8 +2,8 @@
 #include <Wire.h>
 
 // Custom I2C pins for ESP32
-#define I2C_SDA_PIN 33
-#define I2C_SCL_PIN 25
+#define I2C_SDA_PIN 27
+#define I2C_SCL_PIN 26
 
 void setup() {
   Serial.begin(115200);

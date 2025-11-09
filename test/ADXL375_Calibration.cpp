@@ -7,24 +7,21 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL375.h>
 
-#define ADXL375_SCK 13
-#define ADXL375_MISO 12
-#define ADXL375_MOSI 11
-#define ADXL375_CS 10
-
 /* Assign a unique ID to this sensor at the same time */
 /* Uncomment following line for default Wire bus      */
-Adafruit_ADXL375 accel = Adafruit_ADXL375(12345);
 
 /* Uncomment for SPI */
 //Adafruit_ADXL375 accel = Adafruit_ADXL375(ADXL375_SCK, ADXL375_MISO, ADXL375_MOSI, ADXL375_CS, 12345);
+TwoWire I2CBus = TwoWire(0);
+Adafruit_ADXL375 accel = Adafruit_ADXL375(12345, &I2CBus);
 
 void setup(void)
 {
   Serial.begin(115200);
+  delay(2000);
   while (!Serial);
   Serial.println("ADXL375 Offsets Test"); Serial.println("");
-
+  I2CBus.begin(33, 25, 400000);
   /* Initialise the sensor */
   if(!accel.begin())
   {
@@ -71,15 +68,5 @@ void loop(void)
   accel.getEvent(&event);
 
   /* Display the results (acceleration is measured in m/s^2) */
-  Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
-  Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");
-  Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.print("  ");
-  Serial.println("m/s^2 ");
-  
-  Serial.print("Raw X: "); Serial.print(accel.getX()); Serial.print("  ");
-  Serial.print("Y: "); Serial.print(accel.getY()); Serial.print("  ");
-  Serial.print("Z: "); Serial.print(accel.getZ()); Serial.print("  ");
-  Serial.println(" counts");
-  Serial.println();
   delay(500);
 }
