@@ -2,7 +2,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include "Adafruit_ADXL375.h"
-#include <Adafruit_MPU6050.h>
+#include <Adafruit_BMP3XX.h>
 
 // ==== Test Pins =====
 #define TESTPIN 32
@@ -13,27 +13,24 @@
 //ADXL375 Setup
 TwoWire I2CBus = TwoWire(0);  // Use default I²C bus
 Adafruit_ADXL375 accel(12345, &I2CBus);
-float gyro_x_offset = -0.027746;
-float gyro_y_offset = 0.061322;
-float gyro_z_offset = 0.004399;
 #define ADXL375_SDA 33
 #define ADXL375_SCL 25
 
 //MPU6050 and BMP390 Setup
 TwoWire I2CBUS2 = TwoWire(1);
-Adafruit_MPU6050 gyroscope;
+Adafruit_BMP3XX bmp;
 #define Wire1_SDA 27
 #define Wire1_SCL 26
 
 // ==== Logging Parameters ====
 #define LOG_FREQ_HZ 3200
-#define QUEUE_LENGTH 2000
+#define QUEUE_LENGTH 4000
 #define CHUNK_SIZE 400
 
 // ==== Data Struct ====
 struct LogData {
   uint32_t timestamp;
-  char data_type; //1 for ADXL375 data, 2 for MPU9250 data, 3 for barometer data
+  uint8_t data_type; //1 for ADXL375 data, 2 for barometer data
   float x;
   float y;
   float z;
@@ -43,11 +40,9 @@ struct LogData {
 QueueHandle_t logQueue;
 TaskHandle_t sdTaskHandle;
 TaskHandle_t Log_ADXL375_Handle;
-TaskHandle_t Log_Gyroscope_Handle;
-hw_timer_t* hwTimer = NULL;
+TaskHandle_t Log_BMP_Handle;
 hw_timer_t* hwTimer_ADX375 = NULL;
 hw_timer_t* hwTimer_BMP = NULL;
-hw_timer_t* hwTimer_Gyroscope = NULL;
 
 // ==== SD ====
 File dataFile;
@@ -59,11 +54,12 @@ void IRAM_ATTR HIGH_G_IMU_ISR() {
   if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
 }
 
-void IRAM_ATTR GYROSCOPE_ISR() {
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  vTaskNotifyGiveFromISR(Log_Gyroscope_Handle, &xHigherPriorityTaskWoken);
-  if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
-}
+// ====BMP ISR ====
+// void IRAM_ATTR BMP_ISR() {
+//   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//   vTaskNotifyGiveFromISR(Log_BMP_Handle, &xHigherPriorityTaskWoken);
+//   if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
+// }
 
 // ==== HIGH G IMU Task: runs on Core 0 ====
 void Task_Log_ADXL375(void* parameter){
@@ -81,17 +77,19 @@ void Task_Log_ADXL375(void* parameter){
   }
 }
 
-void Task_Log_Gyroscope(void* parameter){
+// === BMP Task: runs on Core 1 ===== 
+void Task_Log_BMP(void* parameter){
   for(;;){
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     static LogData data;
-    sensors_event_t garbage1, gyro, garbage2;
-    gyroscope.getEvent(&garbage1, &gyro, &garbage2);
     data.timestamp = micros();
-    data.x = gyro.gyro.x - gyro_x_offset;
-    data.y = gyro.gyro.y - gyro_y_offset;
-    data.z = gyro.gyro.z - gyro_z_offset;
-    xQueueSend(logQueue, &data, 0);
+    if (bmp.performReading()){
+      data.data_type = 2;
+      data.x = bmp.temperature;
+      data.y = bmp.pressure;
+      data.z = bmp.readAltitude(1013.25);
+      xQueueSend(logQueue, &data, 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
@@ -135,7 +133,6 @@ void TaskSD(void* parameter) {
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  pinMode(TESTPIN, OUTPUT);
 
   //ADXL375 Initialization
   I2CBus.begin(ADXL375_SDA, ADXL375_SCL, 1000000); // SDA, SCL, clock
@@ -149,24 +146,18 @@ void setup() {
                        -(15-20+2)/4); 
   Serial.println("ADXL375 initialized!");
   
-  //MPU6050 Initialization
-  I2CBUS2.begin(Wire1_SDA, Wire1_SCL, 1000000);
-  if(!gyroscope.begin(0x68, &I2CBUS2)){
-    Serial.println("Failed to find mpu6050");
+  //BMP Initialization
+  I2CBUS2.begin(Wire1_SDA, Wire1_SCL, 100000);
+  if(!bmp.begin_I2C(0x77, &I2CBUS2)){
+    Serial.println("Could not find a valid BMP390 sensor, check wiring or address!");
   }
-  gyroscope.setGyroRange(MPU6050_RANGE_2000_DEG);
-    // --- Tell the sensor to output data at 2 kHz ---
-  I2CBUS2.beginTransmission(0x68);
-  I2CBUS2.write(0x1A);      // CONFIG register
-  I2CBUS2.write(0x00);      // DLPF = 0 → 8 kHz internal
-  I2CBUS2.endTransmission();
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);  // about 50 Hz output rate
 
-  I2CBUS2.beginTransmission(0x68);
-  I2CBUS2.write(0x19);      // SMPLRT_DIV
-  I2CBUS2.write(0x03);      // 8 kHz / (1 + 3) = 2 kHz
-  I2CBUS2.endTransmission();
-  Serial.println("MPU6050 initialized");
-
+  delay(100);
+  
   // Create queue for samples
   logQueue = xQueueCreate(QUEUE_LENGTH, sizeof(LogData));
   if (!logQueue) {
@@ -174,22 +165,21 @@ void setup() {
     while (1);
   }
 
-  // Create SD writer task on core 1
+  // Pin tasks to cores
   xTaskCreatePinnedToCore(TaskSD, "SDWriter", 16384, NULL, 1, &sdTaskHandle, 1);
   xTaskCreatePinnedToCore(Task_Log_ADXL375, "", 5000, NULL, 2, &Log_ADXL375_Handle, 0); //change stack size if needed later
-  xTaskCreatePinnedToCore(Task_Log_Gyroscope, "", 5000, NULL, 1, &Log_Gyroscope_Handle, 0);
+  xTaskCreatePinnedToCore(Task_Log_BMP, "BMP", 5000, NULL, 1, &Log_BMP_Handle, 1);  // now runs on Core 1
+
 
   // ==== Configure hardware timer on core 0 ====
   hwTimer_ADX375 = timerBegin(0, 80, true); 
   timerAttachInterrupt(hwTimer_ADX375, &HIGH_G_IMU_ISR, true);
   timerAlarmWrite(hwTimer_ADX375, 312, true); 
   timerAlarmEnable(hwTimer_ADX375);
-
-  hwTimer_Gyroscope = timerBegin(1, 80, true);
-  timerAttachInterrupt(hwTimer_Gyroscope, &GYROSCOPE_ISR, true);
-  timerAlarmWrite(hwTimer_Gyroscope, 500, true);
-  timerAlarmEnable(hwTimer_Gyroscope);
-
+  // hwTimer_BMP = timerBegin(1, 80, true);
+  // timerAttachInterrupt(hwTimer_BMP, &BMP_ISR, true);
+  // timerAlarmWrite(hwTimer_BMP, 20000, true);
+  // timerAlarmEnable(hwTimer_BMP);
 }
 
 void loop() {
