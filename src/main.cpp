@@ -93,41 +93,75 @@ void Task_Log_BMP(void* parameter){
   }
 }
 
-// ==== SD Task: runs on Core 1 ====
+// ==== Utility: create a random filename each run ====
+String makeNewFilename() {
+  // Combine micros() and millis() for pseudo-random uniqueness
+  uint32_t r = (micros() ^ millis()) & 0xFFFFF;  // 20-bit random-ish number
+  return "/log_" + String(r) + ".csv";
+}
+
+// ==== SD Logging Task ====
 void TaskSD(void* parameter) {
   LogData buffer[CHUNK_SIZE];
   int count = 0;
 
+  // Initialize SD
   if (!SD.begin(SD_CS)) {
     Serial.println("SD init failed!");
     vTaskDelete(NULL);
   }
 
-  dataFile = SD.open("/data_log.csv", FILE_WRITE);
+  // --- Create a unique filename for this session ---
+  String fname = makeNewFilename();
+  dataFile = SD.open(fname.c_str(), FILE_WRITE);
   if (!dataFile) {
     Serial.println("File open failed!");
     vTaskDelete(NULL);
   }
 
+  // Write header
+  dataFile.println("timestamp_us,type,x,y,z");
+  dataFile.flush();
+
+  Serial.print("Logging to ");
+  Serial.println(fname);
+
+  unsigned long lastClose = millis();
+
+  // Main loop
   for (;;) {
+    // Pull samples from queue
     if (xQueueReceive(logQueue, &buffer[count], pdMS_TO_TICKS(10)) == pdTRUE) {
       count++;
     }
 
-    // Flush once buffer full or after timeout
+    // Write buffer when full
     if (count >= CHUNK_SIZE) {
       for (int i = 0; i < count; i++) {
         dataFile.printf("%lu,%d,%.3f,%.3f,%.3f\n",
-                buffer[i].timestamp, buffer[i].data_type,
-                buffer[i].x, buffer[i].y, buffer[i].z);
+                        buffer[i].timestamp,
+                        buffer[i].data_type,
+                        buffer[i].x,
+                        buffer[i].y,
+                        buffer[i].z);
       }
       dataFile.flush();
       count = 0;
-      vTaskDelay(1); 
     }
+
+    // ======= Periodic flush + close + reopen =======
+    if (millis() - lastClose > 5000UL) {   // every 5 s (safe but adjustable)
+      dataFile.flush();
+      dataFile.close();
+
+      // Reopen the same file in append mode
+      dataFile = SD.open(fname.c_str(), FILE_APPEND);
+      lastClose = millis();
+    }
+
+    vTaskDelay(1); // Yield to other tasks
   }
 }
-
 
 
 void setup() {
